@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WhatsApp Agent</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">WhatsApp Agent</div>
+    <div id="conn" class="pill">Starting…</div>
+    <div class="spacer"></div>
+    <button id="settingsBtn" class="btn">Settings</button>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main class="layout" id="layout">
+    <aside class="sidebar">
+      <input id="search" class="search" placeholder="Search chats" />
+      <div class="tabs">
+        <button class="tab active" data-filter="all">All chats</button>
+        <button class="tab" data-filter="agent">With agent</button>
+        <button class="tab" data-filter="drafts">Needs review</button>
+      </div>
+      <ul id="chatList" class="chat-list"></ul>
+    </aside>
+
+    <section class="chat" id="chatPane">
+      <div class="empty" id="emptyState">Pick a chat on the left.</div>
+      <div class="chat-inner hidden" id="chatInner">
+        <div class="chat-header">
+          <button class="btn icon back" id="backBtn" aria-label="Back">←</button>
+          <div>
+            <div class="chat-title" id="chatTitle"></div>
+            <div class="chat-sub" id="chatSub"></div>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn" id="agentToggleBtn">Agent</button>
+        </div>
+        <div class="messages" id="messages"></div>
+        <div id="draftArea"></div>
+        <form class="composer" id="composer">
+          <textarea id="composerInput" rows="1" placeholder="Type a message to send yourself"></textarea>
+          <button class="btn primary" type="submit">Send</button>
+        </form>
+      </div>
+    </section>
+
+    <aside class="agent-panel hidden" id="agentPanel"></aside>
+  </main>
+
+  <div id="qrOverlay" class="overlay hidden">
+    <div class="card qr-card">
+      <h2>Link your WhatsApp</h2>
+      <ol>
+        <li>Open WhatsApp on the phone</li>
+        <li>Go to <b>Settings → Linked devices → Link a device</b></li>
+        <li>Scan this code</li>
+      </ol>
+      <img id="qrImg" alt="QR code" />
+      <p class="muted" id="qrHint">Waiting for a code…</p>
+    </div>
+  </div>
+
+  <div id="settingsOverlay" class="overlay hidden">
+    <form class="card settings-card" id="settingsForm">
+      <div class="row"><h2>Settings</h2><div class="spacer"></div><button type="button" class="btn icon" id="closeSettings" aria-label="Close">✕</button></div>
+
+      <label>Your name (how the agent refers to you)
+        <input name="ownerName" />
+      </label>
+
+      <label>Shared instructions <span class="muted">— used by every chat unless the chat overrides them</span>
+        <textarea name="instructions" rows="10"></textarea>
+      </label>
+
+      <details>
+        <summary>Advanced: base prompt and model</summary>
+        <label>Base prompt <span class="muted">— placeholders: {{owner_name}}, {{contact_name}}, {{now}}, {{instructions}}</span>
+          <textarea name="basePrompt" rows="16" class="mono"></textarea>
+        </label>
+        <button type="button" class="btn small" id="resetBasePrompt">Reset base prompt to default</button>
+        <label>Model (OpenRouter model id)
+          <input name="model" list="modelOptions" />
+          <datalist id="modelOptions">
+            <option value="anthropic/claude-sonnet-5.5"></option>
+            <option value="anthropic/claude-opus-5.5"></option>
+            <option value="anthropic/claude-haiku-5.5"></option>
+            <option value="google/gemini-3.8-flash"></option>
+            <option value="openai/gpt-5.6-terra"></option>
+          </datalist>
+        </label>
+        <div class="grid2">
+          <label>Wait before replying (seconds)<input name="debounceSeconds" type="number" min="0" /></label>
+          <label>Messages of history the agent reads<input name="historyMessages" type="number" min="1" /></label>
+          <label>Max photos sent to the model<input name="maxImages" type="number" min="0" /></label>
+          <label>Max auto-replies per chat per hour<input name="maxAutoRepliesPerHour" type="number" min="1" /></label>
+        </div>
+      </details>
+
+      <div class="row">
+        <button type="button" class="btn danger" id="logoutBtn">Unlink WhatsApp</button>
+        <div class="spacer"></div>
+        <span class="muted" id="settingsSaved"></span>
+        <button class="btn primary" type="submit">Save</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="promptOverlay" class="overlay hidden">
+    <div class="card settings-card">
+      <div class="row"><h2>Full prompt for this chat</h2><div class="spacer"></div><button class="btn icon" id="closePrompt" aria-label="Close">✕</button></div>
+      <pre id="promptText" class="prompt-preview"></pre>
+    </div>
+  </div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

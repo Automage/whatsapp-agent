@@ -39,7 +39,7 @@ function cancel(chatId) {
   if (agentState[chatId] === 'waiting') setState(chatId, null);
 }
 
-// New message from the customer: wait a bit (they often send several messages), then reply.
+// New incoming message: wait a bit (they often send several messages), then reply.
 bus.on('incoming', (chatId) => {
   const agent = getAgent(chatId);
   if (!agent?.enabled) return;
@@ -80,7 +80,7 @@ ${userPromptFor(chatId)}`;
 
 const PLACEHOLDER = { audio: '[voice note]', video: '[video]', sticker: '[sticker]' };
 
-/** Convert the chat history into OpenAI-style messages (customer = user, owner = assistant). */
+/** Convert the chat history into OpenAI-style messages (other person = user, this account = assistant). */
 async function buildMessages(chatId, { force = false } = {}) {
   const all = db.messages[chatId] || [];
   const history = all.slice(-(Number(db.settings.historyMessages) || 40));
@@ -144,7 +144,7 @@ function underAutoCap(agent) {
 }
 
 /**
- * Write a reply for this chat. trigger: 'auto' (new customer message) or 'manual' (button in the UI).
+ * Write a reply for this chat. trigger: 'auto' (new incoming message) or 'manual' (button in the UI).
  * Auto-send only happens for 'auto' triggers when the chat has auto-send on.
  */
 export async function generate(chatId, { trigger = 'manual' } = {}) {

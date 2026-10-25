@@ -11,6 +11,12 @@ async function api(path, opts = {}) {
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
+const fmtCost = (usd) => '$' + (usd >= 1 ? usd.toFixed(2) : usd.toFixed(4));
+const fmtTokens = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n));
+function usageText(u) {
+  if (!u?.calls) return 'Nothing spent yet';
+  return `${fmtCost(u.cost)} · ${u.calls} ${u.calls === 1 ? 'call' : 'calls'} · ${fmtTokens(u.promptTokens + u.completionTokens)} tokens`;
+}
 const chatUrl = (id, rest = '') => `/api/chats/${encodeURIComponent(id)}${rest}`;
 
 const state = { chats: [], filter: 'all', search: '', currentId: null, current: null, showAgent: false, draftEdit: null };
@@ -23,9 +29,9 @@ async function loadStatus() {
   $('conn').classList.toggle('ok', s.status === 'open');
   const needsQr = s.status === 'qr' || s.status === 'logged_out';
   $('qrOverlay').classList.toggle('hidden', !needsQr);
-  if (s.qr) { $('qrImg').src = s.qr; $('qrHint').textContent = 'The code refreshes every ~20 seconds.'; }
+  if (s.qr) { $('qrImg').src = s.qr; $('qrHint').textContent = ''; }
   $('banner').classList.toggle('hidden', s.hasApiKey);
-  $('banner').textContent = 'OPENROUTER_API_KEY is not set. Add it to the .env file and restart, or the agent can’t write replies.';
+  $('banner').textContent = 'OPENROUTER_API_KEY is missing from .env. The agent can’t reply until it’s added.';
 }
 
 // ---------- chat list ----------
@@ -52,7 +58,7 @@ function renderChats() {
   $('chatList').innerHTML = list.slice(0, 500).map((c) => {
     const badges = [];
     if (c.draft === 'pending') badges.push('<span class="badge warn">Draft</span>');
-    if (c.draft === 'handoff') badges.push('<span class="badge warn">Needs you</span>');
+    if (c.draft === 'handoff') badges.push('<span class="badge warn">Review</span>');
     if (c.agentState === 'thinking') badges.push('<span class="badge">Writing…</span>');
     if (c.agent) badges.push(`<span class="badge">${c.agent.enabled ? (c.agent.autoSend ? 'Auto' : 'Agent') : 'Agent off'}</span>`);
     if (c.unread) badges.push(`<span class="badge count">${c.unread}</span>`);
@@ -60,7 +66,7 @@ function renderChats() {
       <div class="name">${esc(c.name)}</div><div class="time">${fmtTime(c.lastTs)}</div>
       <div class="preview">${esc(c.preview)}</div><div class="badges">${badges.join('')}</div>
     </li>`;
-  }).join('') || '<li class="chat-item"><span class="muted">No chats yet. They appear once WhatsApp finishes syncing.</span></li>';
+  }).join('') || '<li class="chat-item"><span class="muted">No chats yet.</span></li>';
 }
 
 $('chatList').addEventListener('click', (e) => {
@@ -91,6 +97,7 @@ async function loadCurrent(scrollToEnd = false) {
   const box = $('messages');
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   state.current = await api(chatUrl(state.currentId));
+  state.defaultModel = state.current.defaultModel;
   renderChat();
   if (scrollToEnd || nearBottom) box.scrollTop = box.scrollHeight;
 }
@@ -99,8 +106,8 @@ function renderMessage(m, chatId) {
   const media = `/api/media/${encodeURIComponent(chatId)}/${encodeURIComponent(m.id)}`;
   let body = '';
   if (m.kind === 'image' || m.kind === 'sticker') body += `<img src="${media}" loading="lazy" alt="photo" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'placeholder',textContent:'[photo could not be loaded]'}))" />`;
-  if (m.kind === 'audio') body += `<audio controls preload="none" src="${media}"></audio><div class="placeholder">Voice note (agent can’t listen yet)</div>`;
-  if (m.kind === 'video') body += `<div class="placeholder"><a href="${media}" target="_blank">Video</a> (agent can’t watch yet)</div>`;
+  if (m.kind === 'audio') body += `<audio controls preload="none" src="${media}"></audio><div class="placeholder">Voice note (agent can’t hear)</div>`;
+  if (m.kind === 'video') body += `<div class="placeholder"><a href="${media}" target="_blank">Video</a> (agent can’t see)</div>`;
   if (m.kind === 'document') body += `<div class="placeholder"><a href="${media}" target="_blank">${esc(m.fileName || 'File')}</a></div>`;
   if (m.text) body += `<div class="text">${esc(m.text)}</div>`;
   const time = new Date(m.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -111,9 +118,10 @@ function renderMessage(m, chatId) {
 
 function renderChat() {
   const { chat, messages, agent, draft } = state.current;
-  $('chatTitle').textContent = chat.name;
+  const pill = agent?.enabled ? (agent.autoSend ? '<span class="badge warn">Agent active · auto-send</span>' : '<span class="badge">Agent active</span>') : '';
+  $('chatTitle').innerHTML = `${esc(chat.name)}${pill}`;
   $('chatSub').textContent = [chat.phone && '+' + chat.phone, chat.isGroup && 'Group'].filter(Boolean).join(' · ');
-  $('agentToggleBtn').textContent = agent ? (agent.enabled ? (agent.autoSend ? 'Agent: auto-send' : 'Agent: on') : 'Agent: off') : 'Add agent';
+  $('agentToggleBtn').textContent = 'Agent settings';
 
   let html = '', lastDay = '';
   for (const m of messages) {
@@ -121,7 +129,7 @@ function renderChat() {
     if (day !== lastDay) { html += `<div class="day">${new Date(m.ts * 1000).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</div>`; lastDay = day; }
     html += renderMessage(m, chat.id);
   }
-  $('messages').innerHTML = html || '<div class="empty">No messages stored for this chat yet.</div>';
+  $('messages').innerHTML = html || '<div class="empty">No messages.</div>';
   renderDraft(chat, agent, draft);
   renderAgentPanel();
 }
@@ -133,14 +141,14 @@ function renderDraft(chat, agent, draft) {
   state.draftKey = key;
   let html = '';
   const st = chat.agentState;
-  if (st === 'waiting') html += `<div class="status-line">Waiting for the customer to finish typing, then the agent will write a reply…</div>`;
-  if (st === 'thinking') html += `<div class="status-line">Agent is writing a reply…</div>`;
+  if (st === 'waiting') html += `<div class="status-line">Waiting for more messages…</div>`;
+  if (st === 'thinking') html += `<div class="status-line">Writing reply…</div>`;
   if (st?.startsWith('error')) html += `<div class="status-line error">Agent ${esc(st)}</div>`;
 
   if (draft?.status === 'pending') {
     const text = state.draftEdit ?? draft.text;
     html += `<div class="draft">
-      <div class="label">Suggested reply — check it, edit if needed, then send</div>
+      <div class="label">Suggested reply</div>
       ${draft.note ? `<div class="muted">${esc(draft.note)}</div>` : ''}
       <textarea id="draftText" rows="3">${esc(text)}</textarea>
       <div class="row">
@@ -151,17 +159,17 @@ function renderDraft(chat, agent, draft) {
       </div></div>`;
   } else if (draft?.status === 'handoff') {
     html += `<div class="draft warn">
-      <div class="label">The agent suggests you take over</div>
+      <div class="label">Agent suggests you take over</div>
       <div>${esc(draft.reason)}</div>
-      <div class="row"><button class="btn" data-act="regen">Write a reply anyway</button><div class="spacer"></div><button class="btn" data-act="discard">Dismiss</button></div></div>`;
+      <div class="row"><button class="btn" data-act="regen">Write reply</button><div class="spacer"></div><button class="btn" data-act="discard">Dismiss</button></div></div>`;
   } else if (draft?.status === 'no_reply') {
     html += `<div class="draft">
       <div class="label">${(state.current.messages.at(-1) || {}).fromMe
-        ? 'No reply written: the last message in this chat is yours'
-        : 'The agent thinks no reply is needed right now'}</div>
-      <div class="row"><button class="btn" data-act="regen">Write a follow-up anyway</button><div class="spacer"></div><button class="btn" data-act="discard">Dismiss</button></div></div>`;
+        ? 'Last message is yours'
+        : 'No reply needed'}</div>
+      <div class="row"><button class="btn" data-act="regen">Write follow-up</button><div class="spacer"></div><button class="btn" data-act="discard">Dismiss</button></div></div>`;
   } else if (agent?.enabled && st !== 'thinking') {
-    html += `<div class="status-line"><button class="btn small" data-act="regen">Write a reply now</button></div>`;
+    html += `<div class="status-line"><button class="btn small" data-act="regen">Write reply</button></div>`;
   }
   $('draftArea').innerHTML = html;
   $('draftText')?.addEventListener('input', (e) => { state.draftEdit = e.target.value; });
@@ -203,44 +211,58 @@ function renderAgentPanel() {
   const panel = $('agentPanel');
   panel.classList.toggle('hidden', !state.showAgent || !state.current);
   if (!state.showAgent || !state.current) return;
-  if (document.activeElement?.id === 'customInstr' && panel.dataset.chat === state.currentId) return; // keep typing
+  // don't re-render while someone is typing or has the model list open
+  if (panel.dataset.chat === state.currentId && (document.activeElement?.id === 'customInstr' || panel.querySelector('.picker.open'))) return;
   panel.dataset.chat = state.currentId;
   const { agent } = state.current;
-  const close = '<div class="row"><h3>Agent for this chat</h3><div class="spacer"></div><button class="btn icon" data-a="close" aria-label="Close">✕</button></div>';
+  const close = '<div class="row"><h3>Agent settings</h3><div class="spacer"></div><button class="btn icon" data-a="close" aria-label="Close">✕</button></div>';
   if (!agent) {
     panel.innerHTML = `${close}
-      <p class="muted">No agent in this chat yet. When you add one, it reads new messages from this person and writes replies for you, using your shared instructions.</p>
-      <button class="btn primary" data-a="create">Add agent to this chat</button>`;
+      <p class="muted">Writes replies to new messages in this chat.</p>
+      <button class="btn primary" data-a="create">Add agent</button>`;
     return;
   }
   const mode = agent.instructionsMode;
   panel.innerHTML = `${close}
     <label class="switch"><input type="checkbox" data-a="enabled" ${agent.enabled ? 'checked' : ''}/>
-      <span>Agent is on<small>Writes a reply when a new message comes in.</small></span></label>
+      <span>Enabled</span></label>
     <label class="switch"><input type="checkbox" data-a="autoSend" ${agent.autoSend ? 'checked' : ''}/>
-      <span>Send without asking me<small>Off: replies wait for you to approve them. On: replies go out right away.</small></span></label>
+      <span>Auto-send<small>Send replies without approval</small></span></label>
     <div class="section">
-      <h3>Instructions</h3>
-      <label class="radio"><input type="radio" name="mode" value="global" ${mode === 'global' ? 'checked' : ''}/><span>Use shared instructions</span></label>
-      <label class="radio"><input type="radio" name="mode" value="append" ${mode === 'append' ? 'checked' : ''}/><span>Shared instructions + extra for this chat</span></label>
-      <label class="radio"><input type="radio" name="mode" value="custom" ${mode === 'custom' ? 'checked' : ''}/><span>Only this chat’s own instructions</span></label>
-      <textarea id="customInstr" rows="8" placeholder="${mode === 'custom' ? 'Instructions for this chat only' : 'Extra instructions for this chat, e.g. “This is a repeat customer, their car is a 2015 Golf.”'}" ${mode === 'global' ? 'disabled' : ''}>${esc(agent.customInstructions)}</textarea>
-      <div class="row"><button class="btn primary small" data-a="saveInstr">Save instructions</button><span class="muted" id="instrSaved"></span>
-        <div class="spacer"></div><button class="btn small" data-a="prompt">See full prompt</button></div>
-      <p class="muted">Edit the shared instructions in Settings.</p>
+      <h3>Prompt</h3>
+      <label class="radio"><input type="radio" name="mode" value="global" ${mode !== 'custom' ? 'checked' : ''}/><span>Shared<small>Edit in Settings</small></span></label>
+      <label class="radio"><input type="radio" name="mode" value="custom" ${mode === 'custom' ? 'checked' : ''}/><span>Custom</span></label>
+      ${mode === 'custom' ? `<textarea id="customInstr" rows="8" placeholder="Prompt for this chat">${esc(agent.customInstructions)}</textarea>` : ''}
+      <div class="row">${mode === 'custom' ? '<button class="btn primary small" data-a="saveInstr">Save</button><span class="muted" id="instrSaved"></span>' : ''}
+        <div class="spacer"></div><button class="btn small" data-a="prompt">View prompt</button></div>
     </div>
-    <div class="section"><button class="btn danger small" data-a="remove">Remove agent from this chat</button></div>`;
+    <div class="section">
+      <h3>Model</h3>
+      <div id="agentModelPicker"></div>
+    </div>
+    <div class="section"><h3>Cost</h3><p class="muted">${usageText(state.current.usage)}</p></div>
+    <div class="section"><button class="btn danger small" data-a="remove">Remove agent</button></div>`;
+  $('agentModelPicker').append(modelPicker({
+    value: agent.model || '',
+    defaultLabel: () => `Default (${modelName(state.defaultModel)})`,
+    defaultId: state.defaultModel,
+    onChange: async (model) => { await api(chatUrl(state.currentId, '/agent'), { method: 'PUT', body: { model } }); await loadCurrent(); },
+  }));
 }
 
 $('agentPanel').addEventListener('change', async (e) => {
   const a = e.target.dataset.a;
   if (a === 'enabled' || a === 'autoSend') {
-    if (a === 'autoSend' && e.target.checked && !confirm('Replies will be sent to this customer without you checking them first. Turn on?')) { e.target.checked = false; return; }
+    if (a === 'autoSend' && e.target.checked && !confirm('Send replies without approval?')) { e.target.checked = false; return; }
     await api(chatUrl(state.currentId, '/agent'), { method: 'PUT', body: { [a]: e.target.checked } });
     await loadCurrent(); loadChats();
   }
   if (e.target.name === 'mode') {
-    await api(chatUrl(state.currentId, '/agent'), { method: 'PUT', body: { instructionsMode: e.target.value, customInstructions: $('customInstr').value } });
+    await api(chatUrl(state.currentId, '/agent'), { method: 'PUT', body: {
+      instructionsMode: e.target.value,
+      // keep unsaved edits when switching away from Custom; the text comes back when Custom is picked again
+      ...($('customInstr') ? { customInstructions: $('customInstr').value } : {}),
+    } });
     await loadCurrent();
   }
 });
@@ -260,24 +282,100 @@ $('agentPanel').addEventListener('click', async (e) => {
     $('promptText').textContent = prompt;
     $('promptOverlay').classList.remove('hidden');
   }
-  if (a === 'remove' && confirm('Remove the agent and its settings from this chat?')) {
+  if (a === 'remove' && confirm('Remove agent?')) {
     await api(chatUrl(id, '/agent'), { method: 'DELETE' }); await loadCurrent(); loadChats();
   }
 });
 $('closePrompt').addEventListener('click', () => $('promptOverlay').classList.add('hidden'));
 
 // ---------- settings ----------
-let defaults = {};
 $('settingsBtn').addEventListener('click', async () => {
-  const { settings, defaults: d } = await api('/api/settings');
-  defaults = d;
+  const { settings, defaultSystemMessage: dsm, usage } = await api('/api/settings');
+  defaultSystemMessage = dsm;
+  $('totalUsage').textContent = usageText(usage);
   const form = $('settingsForm');
   for (const [k, v] of Object.entries(settings)) if (form.elements[k]) form.elements[k].value = v;
+  $('settingsModelPicker').replaceChildren(modelPicker({
+    value: settings.model,
+    onChange: (model) => { form.elements.model.value = model; },
+  }));
   $('settingsSaved').textContent = '';
   $('settingsOverlay').classList.remove('hidden');
 });
+let defaultSystemMessage = '';
+$('resetSystemMessage').addEventListener('click', () => { $('settingsForm').elements.systemMessage.value = defaultSystemMessage; });
+// ---------- model list (from OpenRouter) ----------
+let models = [];
+const price = (n) => (n >= 0 ? '$' + (n < 1 ? n.toFixed(2) : +n.toFixed(2)) : '?');
+let modelsLoading = null;
+function loadModels() {
+  if (!modelsLoading) modelsLoading = api('/api/models').then((m) => { models = m; }).catch(() => { modelsLoading = null; });
+  return modelsLoading;
+}
+const modelName = (id) => models.find((m) => m.id === id)?.name || id || '';
+const modelMeta = (m) => `${price(m.input)} in / ${price(m.output)} out per 1M${m.photos ? '' : ' · no photos'}`;
+
+/**
+ * Searchable model dropdown. value '' means "use the default" when defaultLabel is given.
+ * Keyboard: type to search, ↑/↓ to move, Enter to pick, Esc to close.
+ */
+function modelPicker({ value, defaultLabel, defaultId, onChange }) {
+  const el = document.createElement('div');
+  el.className = 'picker';
+  el.innerHTML = `<button type="button" class="picker-btn"></button>
+    <div class="picker-pop hidden"><input class="picker-search" placeholder="Search models" /><ul class="picker-list"></ul></div>`;
+  const [btn, pop] = el.children;
+  const search = pop.querySelector('input'), list = pop.querySelector('ul');
+  let current = value || '', items = [], active = 0;
+
+  const renderBtn = () => {
+    const m = models.find((x) => x.id === (current || defaultId));
+    const name = current ? modelName(current) : defaultLabel?.() || 'Choose a model';
+    btn.innerHTML = `<span class="picker-text"><span class="picker-name">${esc(name)}</span>${m ? `<span class="picker-meta">${esc(modelMeta(m))}</span>` : ''}</span><span class="caret">▾</span>`;
+  };
+  const renderList = () => {
+    const q = search.value.trim().toLowerCase();
+    items = models.filter((m) => !q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q));
+    if (defaultLabel && !q) items.unshift({ id: '', name: defaultLabel() });
+    active = Math.min(active, Math.max(items.length - 1, 0));
+    list.innerHTML = items.slice(0, 300).map((m, i) => `<li data-i="${i}" class="${i === active ? 'active' : ''} ${m.id === current ? 'selected' : ''}">
+        <div class="picker-name">${esc(m.name)}</div>${m.id ? `<div class="picker-meta">${esc(m.id)} · ${esc(modelMeta(m))}</div>` : ''}</li>`).join('')
+      || `<li class="picker-empty">${models.length ? 'No matches' : 'Loading models…'}</li>`;
+    list.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
+  };
+  const open = async () => {
+    el.classList.add('open'); pop.classList.remove('hidden');
+    search.value = ''; active = 0; renderList(); search.focus();
+    await loadModels();
+    active = Math.max(0, items.findIndex((m) => m.id === current)); renderList(); renderBtn();
+  };
+  const close = () => { el.classList.remove('open'); pop.classList.add('hidden'); };
+  const choose = (i) => {
+    if (!items[i]) return;
+    current = items[i].id; renderBtn(); close(); onChange(current);
+  };
+  el._close = close;
+
+  btn.addEventListener('click', () => (el.classList.contains('open') ? close() : open()));
+  search.addEventListener('input', () => { active = 0; renderList(); });
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { active = Math.min(active + 1, items.length - 1); renderList(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { active = Math.max(active - 1, 0); renderList(); e.preventDefault(); }
+    else if (e.key === 'Enter') { choose(active); e.preventDefault(); }
+    else if (e.key === 'Escape') { close(); btn.focus(); e.preventDefault(); }
+  });
+  list.addEventListener('click', (e) => { const li = e.target.closest('[data-i]'); if (li) choose(Number(li.dataset.i)); });
+
+  renderBtn();
+  loadModels().then(renderBtn);
+  return el;
+}
+// close any open model list when clicking elsewhere
+document.addEventListener('mousedown', (e) => {
+  document.querySelectorAll('.picker.open').forEach((p) => { if (!p.contains(e.target)) p._close(); });
+});
+
 $('closeSettings').addEventListener('click', () => $('settingsOverlay').classList.add('hidden'));
-$('resetBasePrompt').addEventListener('click', () => { $('settingsForm').elements.basePrompt.value = defaults.basePrompt; });
 $('settingsForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = {};
@@ -286,7 +384,7 @@ $('settingsForm').addEventListener('submit', async (e) => {
   $('settingsSaved').textContent = 'Saved';
 });
 $('logoutBtn').addEventListener('click', async () => {
-  if (!confirm('Unlink this WhatsApp account from the app? You’ll need to scan a new QR code.')) return;
+  if (!confirm('Unlink WhatsApp? You’ll need to scan a new QR code.')) return;
   await api('/api/logout', { method: 'POST' });
   $('settingsOverlay').classList.add('hidden');
 });
@@ -295,6 +393,13 @@ $('logoutBtn').addEventListener('click', async () => {
 let reloadTimer = null;
 const reloadCurrentSoon = () => { clearTimeout(reloadTimer); reloadTimer = setTimeout(() => loadCurrent().catch(() => {}), 200); };
 const events = new EventSource('/api/events');
+// reload the page when the server restarted with (possibly) new code, so the page is never out of date
+let bootId = null;
+events.addEventListener('hello', (e) => {
+  const id = JSON.parse(e.data).bootId;
+  if (bootId && id !== bootId) location.reload();
+  bootId = id;
+});
 events.addEventListener('status', () => loadStatus());
 events.addEventListener('chats', () => loadChats());
 events.addEventListener('messages', (e) => { if (JSON.parse(e.data).chatId === state.currentId) reloadCurrentSoon(); });

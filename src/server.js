@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { db, saveApp, getAgent } from './store.js';
 import { wa, bus, connect, sendText, getMediaFile, chatDisplayName, logout } from './whatsapp.js';
 import { generate, updateAgent, approveDraft, discardDraft, agentState, systemPromptFor, defaultAgent } from './agent.js';
-import { DEFAULT_SETTINGS } from './prompts.js';
+import { DEFAULT_SETTINGS, SYSTEM_RULES } from './prompts.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const BOOT_ID = Date.now().toString(36); // changes on every restart, so open pages know to reload
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
@@ -66,6 +67,8 @@ app.get('/api/chats/:id', wrap((req, res) => {
     messages: (db.messages[id] || []).map(publicMessage),
     agent: getAgent(id),
     draft: db.drafts[id] || null,
+    usage: db.usage.chats[id] || null,
+    defaultModel: db.settings.model,
   });
 }));
 
@@ -114,7 +117,32 @@ app.get('/api/media/:id/:msgId', wrap(async (req, res) => {
   res.type(media.mimetype).sendFile(media.file);
 }));
 
-app.get('/api/settings', (req, res) => res.json({ settings: db.settings, defaults: DEFAULT_SETTINGS }));
+// Model list from OpenRouter's public catalog (no key needed), cached for an hour.
+let modelsCache = { at: 0, list: [] };
+app.get('/api/models', wrap(async (req, res) => {
+  if (Date.now() - modelsCache.at > 3600_000 || !modelsCache.list.length) {
+    const r = await fetch('https://openrouter.ai/api/v1/models');
+    if (!r.ok) throw new Error(`OpenRouter model list failed (${r.status})`);
+    const { data } = await r.json();
+    modelsCache = {
+      at: Date.now(),
+      list: data
+        .filter((m) => !m.id.endsWith(':batch') && (m.architecture?.output_modalities || ['text']).includes('text'))
+        .map((m) => ({
+          id: m.id,
+          name: m.name,
+          // USD per 1M tokens
+          input: Number(m.pricing?.prompt) * 1e6,
+          output: Number(m.pricing?.completion) * 1e6,
+          photos: (m.architecture?.input_modalities || []).includes('image'),
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    };
+  }
+  res.json(modelsCache.list);
+}));
+
+app.get('/api/settings', (req, res) => res.json({ settings: db.settings, defaultSystemMessage: SYSTEM_RULES, usage: db.usage.total }));
 app.put('/api/settings', (req, res) => {
   for (const k of Object.keys(DEFAULT_SETTINGS)) if (k in req.body) db.settings[k] = req.body[k];
   saveApp();
@@ -126,6 +154,7 @@ app.get('/api/events', (req, res) => {
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
   res.flushHeaders();
   const send = (type, data = {}) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  send('hello', { bootId: BOOT_ID });
   const handlers = {
     status: () => send('status'),
     chats: () => send('chats'),

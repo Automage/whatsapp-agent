@@ -1,9 +1,9 @@
 // The per-chat reply agent. Uses OpenRouter (OpenAI-compatible API) for the LLM.
 import fs from 'node:fs';
 import OpenAI from 'openai';
-import { db, saveApp, getAgent } from './store.js';
+import { db, saveApp, getAgent, recordUsage } from './store.js';
 import { bus, sendText, getMediaFile, setTyping, chatDisplayName } from './whatsapp.js';
-import { fillTemplate } from './prompts.js';
+import { SYSTEM_RULES } from './prompts.js';
 
 const openrouter = new OpenAI({
   baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
@@ -26,7 +26,7 @@ export function defaultAgent() {
 
 export function updateAgent(chatId, patch) {
   const agent = (db.agents[chatId] ||= defaultAgent());
-  for (const k of ['enabled', 'autoSend', 'instructionsMode', 'customInstructions']) if (k in patch) agent[k] = patch[k];
+  for (const k of ['enabled', 'autoSend', 'instructionsMode', 'customInstructions', 'model']) if (k in patch) agent[k] = patch[k];
   if (!agent.enabled) cancel(chatId);
   saveApp();
   bus.emit('agent', { chatId });
@@ -58,26 +58,25 @@ bus.on('own-message', (chatId) => {
   if (db.drafts[chatId]) { delete db.drafts[chatId]; saveApp(); bus.emit('agent', { chatId }); }
 });
 
-export function instructionsFor(chatId) {
+/** The user's prompt for this chat: the shared one, or the chat's custom one. */
+function userPromptFor(chatId) {
   const agent = getAgent(chatId) || defaultAgent();
-  const global = db.settings.instructions || '';
-  const custom = (agent.customInstructions || '').trim();
-  if (agent.instructionsMode === 'custom') return custom;
-  if (agent.instructionsMode === 'append' && custom) return `${global}\n\nExtra instructions for this chat:\n${custom}`;
-  return global;
+  if (agent.instructionsMode === 'custom') return (agent.customInstructions || '').trim();
+  return db.settings.instructions || '';
 }
 
+/** Full system message: fixed rules + context + the user's prompt. */
 export function systemPromptFor(chatId) {
   const chat = db.chats[chatId] || { id: chatId };
-  return fillTemplate(db.settings.basePrompt, {
-    owner_name: db.settings.ownerName || 'the owner',
-    contact_name: chatDisplayName(chat),
-    now: new Date().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' }),
-    instructions: instructionsFor(chatId),
-  });
-}
+  const now = new Date().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' });
+  return `${db.settings.systemMessage ?? SYSTEM_RULES}
 
-const FORCE_NOTE = '\n\nThe owner has asked you to write a message now. Write the message itself: do not answer with [NO_REPLY] or [HANDOFF].';
+Chat with: ${chatDisplayName(chat)}
+Current time: ${now}
+
+User's instructions:
+${userPromptFor(chatId)}`;
+}
 
 const PLACEHOLDER = { audio: '[voice note]', video: '[video]', sticker: '[sticker]' };
 
@@ -118,12 +117,9 @@ async function buildMessages(chatId, { force = false } = {}) {
 
   if (out[0]?.role === 'assistant') out.unshift({ role: 'user', parts: [{ type: 'text', text: '[start of conversation]' }] });
   const endsWithOwner = out[out.length - 1]?.role !== 'user';
-  if (endsWithOwner) {
-    const nudge = force
-      ? '[No new message from the customer yet. Write a follow-up message to send now.]'
-      : '[No new message from the customer. Write a follow-up only if it makes sense, otherwise reply [NO_REPLY].]';
-    out.push({ role: 'user', parts: [{ type: 'text', text: nudge }] });
-  }
+  if (endsWithOwner) out.push({ role: 'user', parts: [{ type: 'text', text: '[No new message from the other person yet.]' }] });
+  // The owner clicked a button asking for a reply: make sure one gets written.
+  if (force) out[out.length - 1].parts.push({ type: 'text', text: '[The user wants a message to send now. Write it; don\'t answer [NO_REPLY] or [HANDOFF].]' });
   // assistant messages must be plain text; user messages can mix text and images
   return {
     endsWithOwner,
@@ -167,15 +163,18 @@ export async function generate(chatId, { trigger = 'manual' } = {}) {
     // When the owner clicks a button asking for a reply, always write one.
     const force = trigger === 'manual';
     const { messages, endsWithOwner } = await buildMessages(chatId, { force });
+    const model = (agent.model || '').trim() || db.settings.model; // per-chat override, else the default
     if (trigger === 'auto' && endsWithOwner) return null; // owner already replied
     const res = await openrouter.chat.completions.create({
-      model: db.settings.model,
+      model,
       max_tokens: 2000,
+      usage: { include: true }, // OpenRouter: return the cost of this call
       messages: [
-        { role: 'system', content: systemPromptFor(chatId) + (force ? FORCE_NOTE : '') },
+        { role: 'system', content: systemPromptFor(chatId) },
         ...messages,
       ],
     });
+    recordUsage(chatId, res.usage);
     const reply = parseReply(res.choices?.[0]?.message?.content);
 
     // A new message came in while we were writing: start over so the reply covers it.
@@ -184,7 +183,7 @@ export async function generate(chatId, { trigger = 'manual' } = {}) {
       return await generate(chatId, { trigger });
     }
 
-    const draft = { ...reply, createdAt: Date.now(), model: db.settings.model, trigger };
+    const draft = { ...reply, createdAt: Date.now(), model, trigger };
     if (reply.status === 'pending' && trigger === 'auto' && agent.autoSend && underAutoCap(agent)) {
       await setTyping(chatId, true);
       await new Promise((r) => setTimeout(r, Math.min(4000, 800 + reply.text.length * 25)));
@@ -193,7 +192,7 @@ export async function generate(chatId, { trigger = 'manual' } = {}) {
       agent.autoLog.push(Date.now());
       delete db.drafts[chatId];
     } else {
-      if (reply.status === 'pending' && trigger === 'auto' && agent.autoSend) draft.note = 'Auto-send paused: hourly limit reached.';
+      if (reply.status === 'pending' && trigger === 'auto' && agent.autoSend) draft.note = 'Hourly auto-send limit reached.';
       db.drafts[chatId] = draft;
     }
     saveApp();

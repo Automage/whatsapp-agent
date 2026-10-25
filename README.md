@@ -21,11 +21,14 @@ Open the app, then on the phone go to **WhatsApp → Settings → Linked devices
 - If you reply from your phone, any pending suggestion for that chat is dropped.
 - **Photos** the customer sends are shown to the model (the most recent 4 by default).
 
-## Prompts (all editable)
+## Prompts, models and cost
 
-- **Settings → Shared instructions:** the garage's questions and rules. Used by every chat.
-- **Per chat:** use the shared instructions, add extra ones for that chat, or replace them entirely. **See full prompt** shows exactly what the model gets.
-- **Settings → Advanced:** the base prompt (tone, hand-off rules), the model (any OpenRouter model id; default `anthropic/claude-sonnet-5.5`), wait time, history length and limits.
+- **Settings → Prompt:** your instructions for the agent. Used by every chat.
+- **Settings → System message:** added before your prompt. Holds the rules the app relies on (`[NO_REPLY]` to skip a reply, `[HANDOFF]` to hand the chat back to you). Editable, with a **Reset** button.
+- **Per chat:** use the shared prompt or write a custom one. **View prompt** shows exactly what the model gets.
+- **Model:** pick any OpenRouter model from the dropdown (list loaded from OpenRouter, with prices). Set a default in Settings and override it per chat. Default: `anthropic/claude-sonnet-5.5`.
+- **Cost:** each chat's agent settings show what its LLM calls have cost; Settings shows the total. Numbers come from OpenRouter.
+- **Settings → Advanced:** wait time, history length, photo limit and the auto-send cap.
 
 ## Important caveats
 

@@ -25,11 +25,32 @@ const wa = load('whatsapp.json', { chats: {}, messages: {}, contacts: {}, aliase
 // agents: { [chatId]: AgentConfig }, drafts: { [chatId]: Draft }
 const app = load('app.json', { settings: {}, agents: {}, drafts: {} });
 app.settings = { ...DEFAULT_SETTINGS, ...app.settings };
+// settings from older versions
+delete app.settings.basePrompt;
+delete app.settings.ownerName;
 
 export const db = {
   chats: wa.chats, messages: wa.messages, contacts: wa.contacts, aliases: wa.aliases || {},
   settings: app.settings, agents: app.agents || {}, drafts: app.drafts || {},
+  // LLM spend: { total: Usage, chats: { [chatId]: Usage } }. Kept even if a chat's agent is removed.
+  usage: app.usage || { total: emptyUsage(), chats: {} },
 };
+
+function emptyUsage() {
+  return { cost: 0, promptTokens: 0, completionTokens: 0, calls: 0 };
+}
+
+/** Add one LLM call's usage (OpenRouter's usage object, cost in USD) to the chat and the total. */
+export function recordUsage(chatId, u) {
+  if (!u) return;
+  for (const t of [db.usage.total, (db.usage.chats[chatId] ||= emptyUsage())]) {
+    t.cost += Number(u.cost) || 0;
+    t.promptTokens += u.prompt_tokens || 0;
+    t.completionTokens += u.completion_tokens || 0;
+    t.calls += 1;
+  }
+  saveApp();
+}
 
 const timers = {};
 function writeLater(file, getData) {
@@ -47,7 +68,7 @@ export function saveWhatsApp() {
   }));
 }
 export function saveApp() {
-  writeLater('app.json', () => ({ settings: db.settings, agents: db.agents, drafts: db.drafts }));
+  writeLater('app.json', () => ({ settings: db.settings, agents: db.agents, drafts: db.drafts, usage: db.usage }));
 }
 
 /** WhatsApp sometimes uses two ids for one person (phone-number id and "lid" id). Map them to one chat. */
